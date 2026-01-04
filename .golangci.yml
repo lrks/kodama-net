@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - ireturn
+    - noinlineerr
+    - paralleltest
+    - revive
+    - wsl
+
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - fmt.Fprintf
+      - fmt.Printf
+      - fmt.Fprint
+      - fmt.Println
+      - fmt.Sprint
+      - fmt.Sprintf
