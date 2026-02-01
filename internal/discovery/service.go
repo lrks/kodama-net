@@ -27,6 +27,12 @@ type Service interface {
 
 	// 指定されたデバイスの各種プロパティを取得する
 	Probe(ctx context.Context, conn Conn, device Device, timeout time.Duration) ([]echonetlite.Property, error)
+
+	// 指定されたデバイスのクラス定義を取得する
+	GetClassDefinition(device Device) (echonetlite.ClassDefinition, error)
+
+	// 指定されたデバイスのプロパティ定義を取得する
+	GetPropertyDefinitionFromMap(device Device, properties []echonetlite.Property, targetEPC byte) ([]echonetlite.PropertyDefinition, error)
 }
 
 type service struct{}
@@ -37,7 +43,7 @@ func NewService() Service {
 
 const maxPayloadSize = 1472
 
-// 探索
+// 探索.
 func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration) ([]Device, error) {
 	// リクエスト送信
 	var requestPayload = []byte{
@@ -74,7 +80,7 @@ func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration
 	for {
 		select {
 		case <-ctx.Done():
-			return devices, ctx.Err()
+			return devices, ctx.Err() //nolint:wrapcheck
 		default:
 		}
 
@@ -85,6 +91,7 @@ func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration
 				// Timeout
 				return devices, nil
 			}
+
 			return devices, fmt.Errorf("failed to read from UDP: %w", err)
 		}
 
@@ -93,7 +100,7 @@ func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration
 			continue
 		}
 
-		frame, err := echonetlite.Parse(buf[:n])
+		frame, err := echonetlite.ParseFrame(buf[:n])
 		if err != nil {
 			// パース失敗
 			continue
@@ -121,12 +128,14 @@ func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration
 
 		// 追加していく
 		devices = append(devices, Device{IPAddr: addr.IP, EOJ: frame.SEOJ})
+
 		count := int(frame.Properties[0].EDT[0])
-		for i := 0; i < count; i++ {
+		for i := range count {
 			offset := 1 + i*3
 			if offset+3 > len(frame.Properties[0].EDT) {
 				break
 			}
+
 			devices = append(devices, Device{IPAddr: addr.IP, EOJ: [3]byte{
 				frame.Properties[0].EDT[offset],
 				frame.Properties[0].EDT[offset+1],
@@ -138,39 +147,150 @@ func (s *service) Discover(ctx context.Context, conn Conn, timeout time.Duration
 	return devices, nil
 }
 
-// 詳細取得
+// 詳細取得.
 func (s *service) Probe(ctx context.Context, conn Conn, device Device, timeout time.Duration) ([]echonetlite.Property, error) {
 	var properties []echonetlite.Property
 
 	// Getプロパティマップの取得
-	getPropertyMap, err := s.get(ctx, conn, device, 0x9f, timeout)
+	getPropertyMap, err := s.get(ctx, conn, device, echonetlite.GetPropertyMapEPC, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get property map from %s,%02x%02x%02x: %w", device.IPAddr, device.EOJ[0], device.EOJ[1], device.EOJ[2], err)
 	}
+
 	properties = append(properties, getPropertyMap)
 
-	// 各種プロパティを取得
-	count := int(getPropertyMap.EDT[0])
-
-	if count >= 16 {
-		// 現状「プロパティマップ記述形式(2)」には非対応
-		return properties, nil
+	// GetプロパティマップからEPCを抽出
+	epcs, err := echonetlite.ParsePropertyMap(getPropertyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse property map: %w", err)
 	}
 
-	for i := 0; i < count; i++ {
-		if getPropertyMap.EDT[1+i] == 0x9f {
+	// EPCをGetしていく
+	for _, epc := range epcs {
+		if epc == echonetlite.GetPropertyMapEPC {
 			// Getプロパティマップは取得済み
 			continue
 		}
 
-		prop, err := s.get(ctx, conn, device, getPropertyMap.EDT[1+i], timeout)
+		prop, err := s.get(ctx, conn, device, epc, timeout)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get property %02x from %s,%02x%02x%02x: %w", getPropertyMap.EDT[1+i], device.IPAddr, device.EOJ[0], device.EOJ[1], device.EOJ[2], err)
+			return nil, fmt.Errorf("failed to get property %02x from %s,%02x%02x%02x: %w", epc, device.IPAddr, device.EOJ[0], device.EOJ[1], device.EOJ[2], err)
 		}
+
 		properties = append(properties, prop)
 	}
 
 	return properties, nil
+}
+
+// デバイスのクラス定義を取得する.
+func (s *service) GetClassDefinition(device Device) (echonetlite.ClassDefinition, error) {
+	key := [2]byte{device.EOJ[0], device.EOJ[1]}
+	if _, ok := echonetlite.ClassDefinitions[key]; !ok {
+		return echonetlite.ClassDefinition{}, fmt.Errorf("class definition not found for EOJ %02x%02x%02x", device.EOJ[0], device.EOJ[1], device.EOJ[2])
+	}
+
+	classDefinition := echonetlite.ClassDefinitions[key]
+
+	// スーパークラスも含めて返す
+	superClassKey := [2]byte{0x00, 0x00}
+	if _, ok := echonetlite.ClassDefinitions[superClassKey]; !ok {
+		return echonetlite.ClassDefinition{}, fmt.Errorf("super class definition not found for EOJ %02x%02x", superClassKey[0], superClassKey[1])
+	}
+
+	superClassDefinition := echonetlite.ClassDefinitions[superClassKey]
+	merged := make([]echonetlite.PropertyDefinition, 0, len(classDefinition.Properties)+len(superClassDefinition.Properties))
+	merged = append(merged, classDefinition.Properties...)
+	merged = append(merged, superClassDefinition.Properties...)
+	classDefinition.Properties = merged
+
+	return classDefinition, nil
+}
+
+// 指定されたEPCのプロパティマップからプロパティ定義を取得する.
+func (s *service) GetPropertyDefinitionFromMap(device Device, properties []echonetlite.Property, targetEPC byte) ([]echonetlite.PropertyDefinition, error) {
+	// クラス定義
+	classDefinition, err := s.GetClassDefinition(device)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get class definition: %w", err)
+	}
+
+	// 規格Versionの取得
+	var appendixVersion byte = 0x00
+
+	if !classDefinition.IsNodeProfile {
+		for _, prop := range properties {
+			if prop.EPC == echonetlite.VersionEPC && prop.PDC == 4 {
+				appendixVersion = prop.EDT[2]
+
+				break
+			}
+		}
+	}
+
+	// プロパティマップの取得
+	foundPropertyMap := false
+
+	var propertyMap echonetlite.Property
+
+	for _, prop := range properties {
+		if prop.EPC == targetEPC {
+			propertyMap = prop
+			foundPropertyMap = true
+
+			break
+		}
+	}
+
+	if !foundPropertyMap {
+		return nil, fmt.Errorf("property map not found for EPC %02x", targetEPC)
+	}
+
+	// プロパティマップからEPCを抽出
+	epcs, err := echonetlite.ParsePropertyMap(propertyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse property map: %w", err)
+	}
+
+	// プロパティ定義の取得
+	var propertyDefinitions []echonetlite.PropertyDefinition
+	for _, epc := range epcs {
+		if epc>>4 == 0xf {
+			propertyDefinitions = append(propertyDefinitions, echonetlite.PropertyDefinition{
+				EPC:           epc,
+				Name:          "ユーザ定義領域",
+				NameEN:        "User defined area",
+				ShortName:     "userDefinedArea",
+				Description:   "ユーザ定義領域",
+				DescriptionEN: "User defined area",
+			})
+			continue
+		}
+
+		found := false
+		for _, prop := range classDefinition.Properties {
+			if epc == prop.EPC {
+				if appendixVersion == 0x00 || (prop.ValidRelease.FROM <= appendixVersion && appendixVersion <= prop.ValidRelease.TO) {
+					propertyDefinitions = append(propertyDefinitions, prop)
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			propertyDefinitions = append(propertyDefinitions, echonetlite.PropertyDefinition{
+				EPC:           epc,
+				Name:          "未定義",
+				NameEN:        "Undefined",
+				ShortName:     "undefined",
+				Description:   "定義なし",
+				DescriptionEN: "Undefined",
+			})
+		}
+	}
+
+	return propertyDefinitions, nil
 }
 
 func (s *service) get(ctx context.Context, conn Conn, device Device, epc byte, timeout time.Duration) (echonetlite.Property, error) {
@@ -205,7 +325,7 @@ func (s *service) get(ctx context.Context, conn Conn, device Device, epc byte, t
 	for {
 		select {
 		case <-ctx.Done():
-			return echonetlite.Property{}, ctx.Err()
+			return echonetlite.Property{}, ctx.Err() //nolint:wrapcheck
 		default:
 		}
 
@@ -220,7 +340,7 @@ func (s *service) get(ctx context.Context, conn Conn, device Device, epc byte, t
 		}
 
 		// レスポンスをパース
-		frame, err := echonetlite.Parse(buf[:n])
+		frame, err := echonetlite.ParseFrame(buf[:n])
 		if err != nil {
 			// パース失敗
 			continue
@@ -246,5 +366,4 @@ func (s *service) get(ctx context.Context, conn Conn, device Device, epc byte, t
 	}
 
 	// 応答が来ない場合もエラーにはしない
-	return echonetlite.Property{}, nil
 }

@@ -10,13 +10,29 @@ linters:
     - paralleltest
     - revive
     - wsl
+    - wsl_v5
+    - cyclop
+    - err113
+    - funlen
+    - gochecknoglobals
+    - gocognit
+    - godox
+    - gosmopolitan
+    - lll
+    - mnd
+    - varnamelen
+    - godoclint
+    - intrange
+    - nlreturn
+    - gosec
+    - govet
+    - prealloc
+    - musttag
 
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - fmt.Fprintf
-      - fmt.Printf
-      - fmt.Fprint
-      - fmt.Println
-      - fmt.Sprint
-      - fmt.Sprintf
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Printf
+        - fmt.Println

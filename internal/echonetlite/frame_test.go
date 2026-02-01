@@ -6,7 +6,7 @@ import (
 	"github.com/lrks/kodama-net/internal/echonetlite"
 )
 
-func TestParse_ValidFrame(t *testing.T) {
+func TestParseFrame_ValidFrame(t *testing.T) {
 	b := []byte{
 		0x10, 0x81, // EHD1, EHD2
 		0x12, 0x34, // TID
@@ -19,9 +19,9 @@ func TestParse_ValidFrame(t *testing.T) {
 		0x01, 0x02, // EDT
 	}
 
-	f, err := echonetlite.Parse(b)
+	f, err := echonetlite.ParseFrame(b)
 	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
+		t.Fatalf("ParseFrame returned error: %v", err)
 	}
 
 	if f.EHD1 != 0x10 || f.EHD2 != 0x81 {
@@ -46,19 +46,19 @@ func TestParse_ValidFrame(t *testing.T) {
 	}
 }
 
-func TestParse_ErrTooShort(t *testing.T) {
-	_, err := echonetlite.Parse([]byte{0x10, 0x81})
+func TestParseFrame_ErrTooShort(t *testing.T) {
+	_, err := echonetlite.ParseFrame([]byte{0x10, 0x81})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
 }
 
-func TestParse_UnsupportedHeader(t *testing.T) {
+func TestParseFrame_UnsupportedHeader(t *testing.T) {
 	b := make([]byte, 12)
 	b[0] = 0x11 // wrong EHD1
 	b[1] = 0x81
 
-	_, err := echonetlite.Parse(b)
+	_, err := echonetlite.ParseFrame(b)
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
