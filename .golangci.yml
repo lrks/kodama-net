@@ -28,6 +28,7 @@ linters:
     - govet
     - prealloc
     - musttag
+    - godot
 
   settings:
     errcheck:

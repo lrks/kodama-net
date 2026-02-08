@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/lrks/kodama-net/internal/echonetlite"
@@ -180,6 +181,11 @@ func (s *service) Probe(ctx context.Context, conn Conn, device Device, timeout t
 		properties = append(properties, prop)
 	}
 
+	// ソートする
+	slices.SortFunc(properties, func(i, j echonetlite.Property) int {
+		return int(i.EPC) - int(j.EPC)
+	})
+
 	return properties, nil
 }
 
@@ -251,6 +257,7 @@ func (s *service) GetPropertyDefinitionFromMap(device Device, properties []echon
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse property map: %w", err)
 	}
+	slices.Sort(epcs)
 
 	// プロパティ定義の取得
 	var propertyDefinitions []echonetlite.PropertyDefinition
